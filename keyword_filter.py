@@ -1,4 +1,6 @@
 from pathlib import Path
+from functools import lru_cache
+from pathlib import Path
 
 
 # ==========================
@@ -220,6 +222,12 @@ def match_node(text, node):
     return False, []
 
 
+@lru_cache(maxsize=8)
+def _parse_expression(expression):
+    """规则表达式只解析一次：几千个关键词的 OR 表达式，解析比匹配贵得多。"""
+    return parse_expression(tokenize(expression))
+
+
 def match_keywords(text, expression):
     """
     判断文本是否命中关键词规则
@@ -229,12 +237,7 @@ def match_keywords(text, expression):
     if not text or not expression:
         return False, []
 
-    tokens = tokenize(expression)
-
-    tree = parse_expression(tokens)
-
-    return match_node(text, tree)
-
+    return match_node(text, _parse_expression(expression))
 
 # ==========================
 # 6. 标题和正文分别匹配

@@ -141,6 +141,124 @@ def extract_table_field(table_data, patterns):
     return ""
 
 
+# ======================== 通用站点兜底 ========================
+# 网址表里的链接不会只有星河易采一个站，所以标题、日期、正文都要有通用规则：
+# 先按星河易采的固定结构找，找不到再按常见的页面结构去找，最后按"文本最多"兜底。
+
+# 常见的正文容器，按命中概率从高到低排
+CONTENT_SELECTORS = [
+    "div.main-text",          # 星河易采
+    "div#UCAP-CONTENT",       # 中国政府采购网
+    "div.TRS_Editor",         # 大量政府网站用的编辑器容器
+    "div.article-content",
+    "div.article_content",
+    "div.news-content",
+    "div.detail-content",
+    "div.article",
+    "div.content",
+    "div#content",
+    "div#zoom",
+    "div.txt",
+    "article",
+]
+
+# 正文至少要这么多字才算有效，挡掉"内容不存在"“登录后查看”这类空壳
+MIN_CONTENT_LEN = 100
+
+
+def pick_title(soup):
+    """标题：先认星河易采的 article-title，再依次试通用结构，最后用 <title> 去掉站点名。"""
+    for selector in ("div.article-title", "h1", "div.title", "span.title", "h2"):
+        node = soup.select_one(selector)
+        if node:
+            text = node.get_text(strip=True)
+            if text:
+                return text
+
+    for attrs in ({"property": "og:title"}, {"name": "ArticleTitle"}, {"name": "title"}):
+        meta = soup.find("meta", attrs=attrs)
+        if meta and meta.get("content", "").strip():
+            return meta["content"].strip()
+
+    if soup.title:
+        text = soup.title.get_text(strip=True)
+        # "公告标题_XX市公共资源交易网" 这类，取前半段
+        return re.split(r"\s*[_\-|｜—]\s*", text)[0].strip()
+
+    return ""
+
+
+def normalize_date(text):
+    """把 2026年11月13日 / 2026/11/13 统一成 2026-11-13。"""
+    if not text:
+        return ""
+    text = text.replace("年", "-").replace("月", "-").replace("日", "")
+    text = text.replace("/", "-").replace(".", "-")
+    match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if not match:
+        return ""
+    year, month, day = match.groups()
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def pick_publish_date(text):
+    """发布日期：带字段名的优先，最后退到"页面上第一个日期"。"""
+    for pattern in (
+        r"发\s*布\s*时\s*间[：:]?\s*([0-9]{4}[-/年][0-9]{2}[-/月][0-9]{1,2})",
+        r"发\s*布\s*日\s*期[：:]?\s*([0-9]{4}[-/年][0-9]{2}[-/月][0-9]{1,2})",
+        r"公\s*告\s*日\s*期[：:]?\s*([0-9]{4}[-/年][0-9]{2}[-/月][0-9]{1,2})",
+        r"([0-9]{4}[-/年][0-9]{2}[-/月][0-9]{1,2})",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            value = normalize_date(match.group(1))
+            if value:
+                return value
+    return ""
+
+
+def pick_content(soup):
+    """
+    正文容器：先按常见的 class/id 找，找不到再用"文本最多且链接最少"的块兜底。
+
+    兜底打分用 text_len - 3 * link_len，是因为导航栏、友情链接、页脚这些块
+    文本也不少，但几乎全是链接，这样能把它们压下去。
+    """
+    for selector in CONTENT_SELECTORS:
+        node = soup.select_one(selector)
+        if node and len(node.get_text(strip=True)) >= MIN_CONTENT_LEN:
+            return node
+
+    for tag in soup(["script", "style", "nav", "footer"]):
+        tag.decompose()
+
+    best_node, best_score = None, 0
+    for node in soup.find_all(["div", "article", "section", "td"]):
+        text_len = len(node.get_text(strip=True))
+        if text_len < MIN_CONTENT_LEN:
+            continue
+        link_len = sum(len(a.get_text(strip=True)) for a in node.find_all("a"))
+        score = text_len - 3 * link_len
+        if score > best_score:
+            best_node, best_score = node, score
+
+    return best_node
+
+
+def clean_method(value):
+    """
+    采购方式的收尾清洗。
+
+    加上叙述句正则后，可能抓到「参照 竞争性 磋商」这种带前缀、带空格的结果，
+    这里去掉前缀并把中间的空格合上；「公开询比(综合评分)」这类本来就干净的保持原样。
+    """
+    if not value:
+        return ""
+
+    value = re.sub(r"^(?:\s*(?:参照|采用|拟采用|本项目|按照|依据))+", "", value.strip())
+    return re.sub(r"\s+", "", value)
+
+
 def get_announcement_detail(detail_url, session=None):
     """
     根据公告详情页URL，提取统一格式的公告信息。
@@ -168,8 +286,15 @@ def get_announcement_detail(detail_url, session=None):
     }
 
     # 2. 请求详情页
+    # UA 只用 "Mozilla/5.0" 会被不少政府站点直接 403，
+    # 换成完整的浏览器请求头，跨站也能拿到页面。
     headers = {
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
     }
 
     _get = session.get if session else requests.get
@@ -186,9 +311,7 @@ def get_announcement_detail(detail_url, session=None):
     soup = BeautifulSoup(response.text, "lxml")
 
     # 4. 提取公告标题
-    title_tag = soup.find("div", class_="article-title")
-
-    title = title_tag.get_text(strip=True) if title_tag else ""
+    title = pick_title(soup)
 
     announcement["title"] = title
 
@@ -260,8 +383,14 @@ def get_announcement_detail(detail_url, session=None):
         region_match.group(1) if region_match else ""
     )
 
+    # 星河易采没有 article-author，或者别的站点结构不同时，从页面文字里找日期
+    if not announcement["publish_date"]:
+        announcement["publish_date"] = pick_publish_date(
+            soup.get_text(" ", strip=True)[:3000]
+        )
+
     # 7. 提取公告正文
-    content_tag = soup.find("div", class_="main-text")
+    content_tag = pick_content(soup)
 
     if not content_tag:
         print("没有找到公告正文：", detail_url)
@@ -356,24 +485,30 @@ def get_announcement_detail(detail_url, session=None):
     ])
 
     # 11. 提取采购方式
-    announcement["procurement_method"] = extract_value([
-        r"(?:采购方式|招标方式)[：:][^\S\n]*([^，。,；;\n]+)"
-    ])
+    announcement["procurement_method"] = clean_method(extract_value([
+        r"(?:采购方式|招标方式)[：:][^\S\n]*([^，。,；;\n]+)",
+
+        # 「本项目进行谈判采购」「采用竞争性磋商方式」这类叙述句
+        r"进行([^，。,；;\n]{2,8}?(?:谈判|磋商|询比|询价))",
+        r"采用([^，。,；;\n]{2,8}?(?:谈判|磋商|询比|询价|公开招标|邀请招标))(?:方式|采购)"
+    ]))
 
     # 如果正文没有明确说明，尝试从标题识别
     if not announcement["procurement_method"]:
 
         method_list = [
-            "公开招标",
-            "邀请招标",
             "竞争性磋商",
             "竞争性谈判",
+            "单一来源采购",
+            "公开招标",
+            "邀请招标",
             "询比价采购",
             "询比采购",
             "询比",
-            "单一来源采购",
             "询价采购",
-            "询价"
+            "询价",
+            "谈判",
+            "磋商"
         ]
 
         for method in method_list:
@@ -405,7 +540,11 @@ def get_announcement_detail(detail_url, session=None):
     # 14. 提取截止时间
     announcement["deadline"] = extract_value([
         r"(?:投标截止时间|响应文件提交截止时间|响应文件的提交截止时间|"
-        r"投标文件递交截止时间|报价截止时间|开标时间)[：:][^\S\n]*([^，。,；;\n]+)"
+        r"投标文件递交截止时间|报价截止时间|开标时间)[：:][^\S\n]*([^，。,；;\n]+)",
+
+        # 别的站点常写成「递交截止时间为 2025 年 11 月 14 日 9 时 30 分」，没有冒号
+        r"(?:递交截止时间|提交截止时间|投标截止时间|报价截止时间|开标时间)"
+        r"[^0-9]{0,10}([0-9]{4}\s*年\s*[0-9]{1,2}\s*月\s*[0-9]{1,2}\s*日[^\n，。,；;]{0,14})"
     ])
 
     # 15. 提取项目内容或采购范围
@@ -435,14 +574,3 @@ def get_announcement_detail(detail_url, session=None):
     return announcement
 
 
-# 单独测试详情页时使用
-if __name__ == "__main__":
-
-    url = "http://www.ygcgw.com.cn/news/0004771181272.html"
-
-    data = get_announcement_detail(url)
-
-    print("公告详情采集结果：\n")
-
-    for key, value in data.items():
-        print(f"{key}：{value}")

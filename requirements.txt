@@ -1,0 +1,16 @@
+# 爬虫
+requests
+beautifulsoup4
+lxml
+
+# 数据处理与导出
+pandas
+openpyxl
+
+# 后端服务
+fastapi
+uvicorn[standard]
+python-multipart
+
+
+

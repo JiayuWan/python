@@ -1,0 +1,364 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>招标公告采集平台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f5f5f5;color:#333;font-size:14px}
+.header{background:#1a6fb5;color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10}
+.header h1{font-size:18px;font-weight:500}
+.header small{font-size:11px;opacity:.7}
+.stats{display:flex;gap:6px;padding:10px 16px;background:#fff;border-bottom:1px solid #eee;overflow-x:auto}
+.stat{flex:1;min-width:70px;text-align:center;padding:8px 4px;background:#f8fafc;border-radius:8px}
+.stat .num{font-size:22px;font-weight:500;color:#1a6fb5}
+.stat .label{font-size:11px;color:#888;margin-top:2px}
+.crawl-box{margin:10px 16px;padding:12px;background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.crawl-box button{padding:8px 20px;background:#1a6fb5;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;white-space:nowrap}
+.crawl-box button:disabled{background:#a0c4e0;cursor:not-allowed}
+.crawl-box button.export{background:#059669}
+.crawl-box button.import{background:#475569}
+.crawl-box button.import:disabled{background:#a8b0ba}
+.progress{flex:1;min-width:150px;display:none}
+.progress .bar{height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden}
+.progress .bar div{height:100%;background:#1a6fb5;border-radius:2px;transition:width .3s}
+.progress .text{font-size:11px;color:#888;margin-top:3px}
+.filters{padding:8px 16px;display:flex;gap:6px;background:#fff;border-bottom:1px solid #eee;flex-wrap:wrap}
+.filters input,.filters select{flex:1 1 120px;padding:7px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px}
+.filters #q{flex:1 1 100%}
+.card{margin:8px 16px;padding:12px;background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.05);cursor:pointer}
+.card .title{font-weight:500;font-size:15px;line-height:1.4;margin-bottom:6px}
+.card .meta{font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap}
+.tag{padding:2px 8px;border-radius:10px;font-size:11px;white-space:nowrap}
+.tag-kw{background:#fef3c7;color:#92400e}
+.tag-cn{background:#fde2e4;color:#9f1239}
+.tag-method{background:#dbeafe;color:#1e40af}
+.tag-budget{background:#d1fae5;color:#065f46}
+.pagination{display:flex;justify-content:center;gap:8px;padding:16px;font-size:13px;color:#888}
+.pagination button{padding:6px 14px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer}
+.pagination button:disabled{opacity:.4}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:20;justify-content:center;align-items:flex-end}
+.modal-bg.show{display:flex}
+.modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-height:80vh;overflow-y:auto;padding:20px 16px 30px}
+.modal h3{font-size:17px;margin-bottom:12px;line-height:1.4}
+.modal .row{display:flex;padding:6px 0;border-bottom:1px solid #f3f3f3;font-size:13px}
+.modal .row .k{color:#888;width:80px;flex-shrink:0}
+.modal .row .v{color:#333;flex:1;word-break:break-all}
+.empty{text-align:center;padding:40px;color:#999;font-size:14px}
+.empty .look{margin-top:14px;padding:7px 16px;background:#fff;color:#1a6fb5;border:1px solid #1a6fb5;border-radius:8px;font-size:13px;cursor:pointer}
+.notice{display:none;margin:8px 16px 0;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.5;word-break:break-all}
+.notice.show{display:block}
+.notice.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}
+.notice.err{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
+.notice.info{background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe}
+.logbox{display:none;margin:8px 16px 0;padding:10px 12px;background:#0f172a;color:#cbd5e1;border-radius:8px;font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.6;max-height:180px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.logbox.show{display:block}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>招标公告采集平台</h1>
+  <small id="hint"></small>
+</div>
+
+<div class="crawl-box">
+  <button id="btnCrawl" onclick="startCrawl()">开始采集</button>
+  <button class="export" onclick="window.open('/api/export')">导出 Excel</button>
+  <!-- 新增：导入网址表 -->
+  <button class="import" id="btnImport" onclick="document.getElementById('fileInput').click()">导入网址表</button>
+  <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none" onchange="importExcel(this)">
+  <div class="progress" id="progressBox">
+    <div class="bar"><div id="bar" style="width:0%"></div></div>
+    <div class="text" id="progressText"></div>
+  </div>
+</div>
+
+<div class="notice" id="notice"></div>
+<div class="logbox" id="logbox"></div>
+
+<div class="stats" id="stats"></div>
+
+<div class="filters">
+  <input type="text" id="q" placeholder="搜索标题/项目/采购人" oninput="onSearchInput()">
+  <select id="kwTitle" onchange="page=1;loadList()"><option value="">标题关键词</option></select>
+  <select id="kwContent" onchange="page=1;loadList()"><option value="">正文关键词</option></select>
+</div>
+
+<div id="list"></div>
+<div class="pagination" id="pageNav"></div>
+
+<div class="modal-bg" id="modalBg" onclick="closeModal(event)">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+let page=1, items=[], polling=null, searchTimer=null;
+
+// ===== 概览 + 初始化 =====
+// 关键：fetch 遇到 404/500 不会自己报错，必须手动检查 r.ok，
+// 否则接口没重启（404）时会被当成"空数据"，下拉就这么空着，还不给任何提示。
+function getJson(url){
+  return fetch(url).then(r=>{
+    if(!r.ok) throw new Error(url+" 返回 "+r.status);
+    return r.json();
+  });
+}
+
+async function loadOverview(showData){
+  // 三个接口互不依赖：任何一个失败都不该拖垮整页
+  const [oRes, tRes, cRes] = await Promise.allSettled([
+    getJson("/api/overview"),
+    getJson("/api/keywords/title"),
+    getJson("/api/keywords/content"),
+  ]);
+
+  const o = oRes.status === "fulfilled" ? oRes.value : null;
+  const titleList = tRes.status === "fulfilled" ? (tRes.value.keywords || []) : [];
+  const contentList = cRes.status === "fulfilled" ? (cRes.value.keywords || []) : [];
+
+  // 把失败的接口名直接显示在右上角，方便定位
+  const failed = [];
+  if(!o) failed.push("概览");
+  if(tRes.status !== "fulfilled") failed.push("标题关键词");
+  if(cRes.status !== "fulfilled") failed.push("正文关键词");
+
+  const hintEl = document.getElementById("hint");
+  if(failed.length){
+    hintEl.textContent = "接口异常：" + failed.join("、");
+  }else{
+    hintEl.textContent = o && o.has_data ? "更新于 " + o.updated_at.slice(11,16) : "暂无数据";
+  }
+
+  // 刚打开页面时不展示上次采集的结果，避免把旧数据当成这次的
+  if(showData === false && !failed.length){
+    hintEl.textContent = "尚未采集";
+    document.getElementById("stats").innerHTML = "";
+    fillSelect("kwTitle", "标题关键词", []);
+    fillSelect("kwContent", "正文关键词", []);
+    document.getElementById("list").innerHTML =
+      '<div class="empty">先导入网址表，再点「开始采集」' +
+      '<button class="look" onclick="loadOverview(true)">看上次的结果</button></div>';
+    document.getElementById("pageNav").innerHTML = "";
+    return;
+  }
+
+  // 两个下拉各自来自自己的接口，选项不会互相混入
+  fillSelect("kwTitle", "标题关键词", titleList);
+  fillSelect("kwContent", "正文关键词", contentList);
+
+  // 关键词种数按去重后的名字统计
+  const kwNames = new Set([
+    ...titleList.map(k=>k.name),
+    ...contentList.map(k=>k.name),
+  ]);
+
+  document.getElementById("stats").innerHTML=(o && o.has_data)?`
+    <div class="stat"><div class="num">${o.total}</div><div class="label">公告</div></div>
+    <div class="stat"><div class="num">${kwNames.size}</div><div class="label">关键词种数</div></div>
+    <div class="stat"><div class="num">${o.latest_date||"-"}</div><div class="label">最新日期</div></div>
+  `:"";
+
+  if(o && o.has_data) loadList();
+}
+loadOverview(false);   // 进入页面先留空，等采集完再展示
+renderLog([]);         // 日志面板也清空，别显示上次的
+
+function fillSelect(id, label, list){
+  const el=document.getElementById(id);
+  const keep=el.value;
+  el.innerHTML=`<option value="">${label}</option>`+
+    list.map(k=>`<option value="${esc(k.name)}">${esc(k.name)}(${k.count})</option>`).join("");
+  el.value=keep;
+}
+
+// ===== 列表 =====
+async function loadList(){
+  const q=document.getElementById("q").value;
+  const kwTitle=document.getElementById("kwTitle").value;
+  const kwContent=document.getElementById("kwContent").value;
+  const d=await fetch(`/api/announcements?q=${encodeURIComponent(q)}&kws_title=${encodeURIComponent(kwTitle)}&kws_content=${encodeURIComponent(kwContent)}&page=${page}&size=20`).then(r=>r.json());
+  items=d.items||[];
+  document.getElementById("list").innerHTML=items.length?items.map((r,i)=>`
+    <div class="card" onclick="showDetail(${i})">
+      <div class="title">${esc(r.title)}</div>
+      <div class="meta"><span>${r.date||"-"}</span><span>${r.purchaser||"采购人未知"}</span></div>
+      <div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">
+        ${r.method?`<span class="tag tag-method">${esc(r.method)}</span>`:""}
+        ${r.budget?`<span class="tag tag-budget">${esc(r.budget)}</span>`:""}
+        ${(r.title_kw||[]).slice(0,3).map(k=>`<span class="tag tag-kw">${esc(k)}</span>`).join("")}
+        ${(r.content_kw||[]).slice(0,3).map(k=>`<span class="tag tag-cn">正文 ${esc(k)}</span>`).join("")}
+      </div>
+    </div>
+  `).join(""):`<div class="empty">暂无公告</div>`;
+
+  // 分页
+  let pn="";
+  if(page>1)pn+=`<button onclick="page--;loadList()">上页</button>`;
+  pn+=`<span>${d.page||1}/${d.pages||1} 页  (${d.filtered||0}/${d.total||0} 条)</span>`;
+  if(page<(d.pages||1))pn+=`<button onclick="page++;loadList()">下页</button>`;
+  document.getElementById("pageNav").innerHTML=pn;
+}
+
+// ===== 搜索防抖（新增：避免每敲一个字就请求一次） =====
+function onSearchInput(){
+  clearTimeout(searchTimer);
+  searchTimer=setTimeout(()=>{ page=1; loadList(); },300);
+}
+
+// ===== 详情弹窗 =====
+function showDetail(i){
+  const r=items[i];
+  const url=safeUrl(r.url);
+  document.getElementById("modal").innerHTML=`
+    <h3>${esc(r.title)}</h3>
+    ${row("项目名称",r.project)}${row("采购人/招标人",r.purchaser)}${row("代理机构",r.agency)}
+    ${row("采购方式",r.method)}${row("项目编号",r.no)}${row("预算金额",r.budget)}
+    ${row("截止时间",r.deadline)}${row("发布日期",r.date)}${row("项目内容",r.scope)}
+    ${row("标题关键词",(r.title_kw||[]).join("、"))}${row("正文关键词",(r.content_kw||[]).join("、"))}
+    ${url?`<div class="row"><span class="k">原文</span><span class="v"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a></span></div>`:""}
+  `;
+  document.getElementById("modalBg").classList.add("show");
+}
+function row(k,v){return v?`<div class="row"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`:""}
+function closeModal(e){if(e.target===document.getElementById("modalBg"))document.getElementById("modalBg").classList.remove("show")}
+function esc(s){return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;")}
+// 新增：详情链接只放行 http/https，挡掉 javascript: 这类伪协议
+function safeUrl(u){return /^https?:\/\//i.test(u||"")?u:""}
+
+// ===== 采集：必须先导入网址表 =====
+// pendingFile 存已上传的网址表文件名，为空时不允许开始采集
+let pendingFile="";
+let importedCount=0;   // 记住上次成功导入的条数，用来恢复按钮文字
+
+async function startCrawl(){
+  if(!pendingFile){
+    alert("请先导入网址表，再点开始采集");
+    return;
+  }
+  const r=await fetch(
+    "/api/crawl?source=excel&file="+encodeURIComponent(pendingFile),
+    {method:"POST"}
+  ).then(r=>r.json());
+  if(!r.ok){alert(r.message);return}
+  document.getElementById("btnCrawl").disabled=true;
+  document.getElementById("btnImport").disabled=true;
+  document.getElementById("progressBox").style.display="block";
+  renderLog([]);
+  showNotice("正在采集，进度见上方进度条","info");
+  pollCrawl();
+}
+
+// 状态条：上传、采集这些动作的结果直接写在页面上，不靠 alert 和右上角小字
+function showNotice(msg, type){
+  const el=document.getElementById("notice");
+  if(!msg){ el.className="notice"; el.textContent=""; return; }
+  el.className="notice show "+(type||"info");
+  el.textContent=msg;
+}
+
+// ===== 导入网址表（只负责读表，不自动开始采集） =====
+async function importExcel(input){
+  const file=input.files[0];
+  if(!file) return;
+
+  const btn=document.getElementById("btnImport");
+  btn.disabled=true; btn.textContent="读取中…";
+  showNotice("正在读取「"+file.name+"」…","info");
+
+  try{
+    const form=new FormData();
+    form.append("file", file);
+
+    const upRes=await fetch("/api/upload",{method:"POST",body:form});
+    const up=await upRes.json();
+    if(!upRes.ok){
+      const msg=(up&&typeof up.detail==="string")?up.detail:("接口返回 "+upRes.status+"，后端可能没重启");
+      showNotice("上传失败："+msg,"err");
+      alert("上传失败："+msg);
+      return;
+    }
+
+    // 记住这张表，等用户点「开始采集」
+    pendingFile=up.file;
+    importedCount=up.count;
+
+    // 上传接口会顺手判断每个网址是列表页还是详情页，这里照实说清楚
+    const listCount=(up.lists||[]).length;
+    const listItems=(up.lists||[]).reduce((sum,item)=>sum+(item.items||0),0);
+
+    let msg="已载入 "+up.count+" 个网址";
+    if(listCount){
+      msg += "，其中 "+listCount+" 个是列表页（首页共 "+listItems+" 条公告，采集时会自动翻页）";
+      if(up.detail) msg += "，"+up.detail+" 个是详情页";
+      document.getElementById("hint").textContent="已识别 "+listItems+" 条公告（首页）";
+    }else{
+      msg += "，都是详情页，可以直接抓";
+      document.getElementById("hint").textContent="已载入 "+up.count+" 个网址";
+    }
+    if(up.unknown) msg += "；另有 "+up.unknown+" 个打不开，采集时可能会跳过";
+
+    showNotice(msg+"。现在可以点「开始采集」了","ok");
+    btn.textContent="已导入 "+up.count+" 个";
+
+    // 列表区那句「先导入网址表」已经过时了，跟着换掉
+    const listEl=document.getElementById("list");
+    if(!listEl.querySelector(".card")){
+      listEl.innerHTML='<div class="empty">网址表已载入，点「开始采集」开始抓取</div>';
+    }
+
+  }catch(e){
+    showNotice("上传失败："+e.message,"err");
+    alert("上传失败："+e.message);
+  }finally{
+    btn.disabled=false;
+    // 不管这次成功还是失败，按钮都得回到可用状态：
+    // 之前导入成功过就显示条数，否则恢复原文案
+    btn.textContent = importedCount ? ("已导入 "+importedCount+" 个") : "导入网址表";
+    input.value="";   // 不清空的话，同一个文件选第二次不触发 onchange
+  }
+}
+
+// 采集日志：把后端最后几行直接铺在页面上，进度不再是一行一闪而过的小字
+function renderLog(lines){
+  const box=document.getElementById("logbox");
+  if(!lines || !lines.length){ box.className="logbox"; box.textContent=""; return; }
+  box.className="logbox show";
+  box.textContent=lines.slice(-8).join("\n");
+  box.scrollTop=box.scrollHeight;
+}
+
+// ===== 进度轮询 =====
+function pollCrawl(){
+  fetch("/api/crawl/status").then(r=>r.json()).then(s=>{
+    document.getElementById("bar").style.width=(s.percent||0)+"%";
+    document.getElementById("progressText").textContent=
+      (s.percent||0)+"% | "+(s.last_line||"");
+    renderLog(s.log);
+    if(s.running){setTimeout(pollCrawl,1000)}
+    else{
+      document.getElementById("btnCrawl").disabled=false;
+      document.getElementById("btnImport").disabled=false;
+      document.getElementById("progressBox").style.display="none";
+      document.getElementById("bar").style.width="0%";
+      showNotice(
+        s.error ? ("采集结束但有报错："+s.error) : "采集完成，结果已更新",
+        s.error ? "err" : "ok"
+      );
+      loadOverview();
+    }
+  });
+}
+
+// 如果之前采集还在跑，恢复进度
+fetch("/api/crawl/status").then(r=>r.json()).then(s=>{
+  if(s.running){
+    document.getElementById("btnCrawl").disabled=true;
+    document.getElementById("progressBox").style.display="block";
+    pollCrawl();
+  }
+});
+</script>
+</body>
+</html>
