@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from config import MAX_UPLOAD_BYTES, PAGE_SIZE_DEFAULT, PAGE_SIZE_MAX
 from list_spider import probe_urls
 from url_source import read_urls
 
@@ -34,7 +35,7 @@ STATIC_DIR = BASE_DIR / "static"
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024   # 网址表没必要超过 10MB
+# 上传大小上限来自 config.py（默认 10MB），网址表没必要更大
 
 app = FastAPI(title="招标公告看板")
 
@@ -171,7 +172,7 @@ def announcements(
     kws_title: str = Query("", description="标题关键词，逗号分隔，命中任意一个即可"),
     kws_content: str = Query("", description="正文关键词，逗号分隔，命中任意一个即可"),
     page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=50),
+    size: int = Query(PAGE_SIZE_DEFAULT, ge=1, le=PAGE_SIZE_MAX),
 ):
     df = load_df()
     if df.empty:
@@ -195,7 +196,7 @@ def announcements(
     if q.strip():
         keyword = q.strip()
         hits = [
-            filtered[col].str.contains(keyword, na=False, case=False)
+            filtered[col].str.contains(keyword, na=False, case=False, regex=False)
             for col in (COL_TITLE, COL_PROJECT, COL_PURCHASER, COL_NO)
             if col in filtered.columns
         ]

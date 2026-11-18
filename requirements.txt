@@ -2,15 +2,14 @@
 requests
 beautifulsoup4
 lxml
+cryptography      # 中车购接口要 RSA 加密时间戳
 
 # 数据处理与导出
 pandas
 openpyxl
+xlrd        # 只有要读老版 .xls 网址表才用得上
 
 # 后端服务
 fastapi
 uvicorn[standard]
 python-multipart
-
-
-

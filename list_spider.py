@@ -31,18 +31,20 @@ from urllib.parse import urljoin, urlparse, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
-# 和 detail_spider.py 用同一套完整浏览器头，避免被政府站点 403
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-}
+from config import (
+    HEADERS,
+    MIN_CLUSTER,
+    MIN_LINK_TITLE,
+    PAGE_SLEEP,
+    PROBE_BUDGET_SECONDS,
+    PROBE_CONNECT_TIMEOUT,
+    PROBE_READ_TIMEOUT,
+    PROBE_WORKERS,
+    REQUEST_TIMEOUT,
+    RETRY_BASE_DELAY,
+    RETRY_TIMES,
+)
 
-MIN_LINK_TITLE = 8          # 标题短于这个长度，基本是导航或栏目名
-MIN_CLUSTER = 3             # 同一形状的链接至少几条，才认为这一页是列表页
 SKIP_PREFIXES = ("javascript:", "mailto:", "tel:", "#", "data:")
 NEXT_TEXTS = ("下一页", "下页", "后一页", "下一頁", "next", "›", "»", ">")
 
@@ -205,6 +207,60 @@ def find_numbered_next(soup, page_url, current_no, visited):
     return ""
 
 
+def fetch_html(url, session=None, retries=RETRY_TIMES, log=print):
+    """
+    抓一页 HTML，带重试。
+
+    原来这里一次失败就 break：翻 50 页公告，第 37 页网络抖 0.5 秒，
+    后面 13 页就全丢了，日志还写着「已是最后一页」，看着像站点只有 36 页。
+    现在失败按 1s、2s、4s 退避重试，三次还不行才认输。
+
+    重试的边界：
+    - 连接失败、超时、连接被重置 → 重试（这类基本都是一过性的）；
+    - 429、5xx → 重试（服务器忙不过来，退避一下往往就好了）；
+    - 其它 4xx（403/404）→ 直接抛，不重试，重试也是同样的结果，纯浪费时间。
+    """
+    _get = session.get if session else requests.get
+    last_exc = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            resp = _get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+
+            # 429 和 5xx 值得等一下再试，其它 4xx 直接按失败处理
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                raise requests.HTTPError(f"HTTP {resp.status_code}", response=resp)
+
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding
+            return resp
+
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+
+            if status and 400 <= status < 500 and status != 429:
+                raise   # 403/404 这类重试没意义
+
+            last_exc = exc
+            if attempt == retries:
+                raise
+
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            log(f"  ! {url} 返回 HTTP {status}，{delay:.0f} 秒后重试（{attempt}/{retries}）")
+            time.sleep(delay)
+
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt == retries:
+                raise
+
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            log(f"  ! {url} 网络异常（{type(exc).__name__}），{delay:.0f} 秒后重试（{attempt}/{retries}）")
+            time.sleep(delay)
+
+    raise last_exc   # 理论上到不了这里，留着兜底
+
+
 def crawl_one_source(url, max_pages=None, session=None, log=print):
     """
     处理一个网址：
@@ -214,8 +270,6 @@ def crawl_one_source(url, max_pages=None, session=None, log=print):
 
     max_pages=None 表示不限页数；想临时限制可以传整数。
     """
-    _get = session.get if session else requests.get
-
     found = []
     page_url = url
     pattern = ""
@@ -224,11 +278,10 @@ def crawl_one_source(url, max_pages=None, session=None, log=print):
 
     while True:
         try:
-            resp = _get(page_url, headers=HEADERS, timeout=20)
-            resp.raise_for_status()
-            resp.encoding = resp.apparent_encoding
+            resp = fetch_html(page_url, session=session, log=log)
         except requests.RequestException as exc:
-            log(f"  * 第 {page_no} 页抓取失败：{page_url} → {exc}")
+            # 网络类错误已经自动重试过；4xx 不重试。到这里就是这一页真的拿不到，只能停
+            log(f"  x 第 {page_no} 页抓取失败：{page_url} → {exc}")
             break
 
         soup = BeautifulSoup(resp.text, "lxml")
@@ -266,7 +319,7 @@ def crawl_one_source(url, max_pages=None, session=None, log=print):
         log(f"  第 {page_no} 页：{nxt}")
         visited.add(nxt)
         page_url = nxt
-        time.sleep(1)
+        time.sleep(PAGE_SLEEP)
 
     return found
 
@@ -276,12 +329,15 @@ def probe(url, session=None):
     轻量探测：只抓这个网址的第一页，判断它是列表页还是详情页。
 
     上传网址表时用这个，目的是别把「1 个列表页地址」当成「1 条公告」显示给用户。
-    不翻页，所以一个网址只发一次请求，几十个网址也能几秒内出结果。
+    不翻页，所以一个网址只发一次请求。
+
+    超时拆成两段：连不上 3 秒就放弃，连上了最多等 8 秒内容。
+    之前是统一 20 秒，表里放几个内网地址或已失效的域名，上传就会一直转圈。
     """
     _get = session.get if session else requests.get
 
     try:
-        resp = _get(url, headers=HEADERS, timeout=20)
+        resp = _get(url, headers=HEADERS, timeout=(PROBE_CONNECT_TIMEOUT, PROBE_READ_TIMEOUT))
         resp.raise_for_status()
         resp.encoding = resp.apparent_encoding
     except requests.RequestException as exc:
@@ -295,9 +351,15 @@ def probe(url, session=None):
     return {"url": url, "type": "detail", "items": 1}
 
 
-def probe_urls(urls, max_workers=5):
-    """批量探测，并发跑，顺序按原表顺序返回。"""
-    from concurrent.futures import ThreadPoolExecutor
+def probe_urls(urls, max_workers=PROBE_WORKERS, budget=PROBE_BUDGET_SECONDS):
+    """
+    批量探测，并发跑，顺序按原表顺序返回。
+
+    除了单个网址的超时，还加了一个整批的时间预算：
+    到点还没回来的网址直接标 unknown 先返回给页面，不让上传按钮一直转。
+    这些网址采集时照样会尝试，只是上传那一刻不再等它们。
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait
 
     if not urls:
         return []
@@ -309,8 +371,32 @@ def probe_urls(urls, max_workers=5):
         finally:
             session.close()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        return list(pool.map(task, urls))
+    results = {}
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = {pool.submit(task, u): u for u in urls}
+        done, pending = wait(futures, timeout=budget)
+
+        for future in done:
+            url = futures[future]
+            try:
+                results[url] = future.result()
+            except Exception as exc:
+                results[url] = {"url": url, "type": "unknown", "items": 0, "note": str(exc)[:60]}
+
+        for future in pending:
+            results[futures[future]] = {
+                "url": futures[future],
+                "type": "unknown",
+                "items": 0,
+                "note": "探测超时，未在限定时间内返回",
+            }
+            future.cancel()
+    finally:
+        # 不等后台线程跑完，先让接口返回；它们最多再跑几秒自己结束
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    return [results[url] for url in urls]
 
 
 def get_announcement_list(urls, max_pages=None, session=None, log=print):
@@ -336,23 +422,3 @@ def get_announcement_list(urls, max_pages=None, session=None, log=print):
 
     return announcements
 
-
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("用法：python list_spider.py <列表页网址> [翻几页]（不填就一直翻到最后一页）")
-        raise SystemExit(1)
-
-    # 默认不限制页数，第二个参数可以临时限定
-    pages = int(sys.argv[2]) if len(sys.argv) >= 3 else None
-
-    session = requests.Session()
-    try:
-        data = get_announcement_list([sys.argv[1]], max_pages=pages, session=session, log=print)
-    finally:
-        session.close()
-
-    print(f"\n共 {len(data)} 条公告")
-    for index, item in enumerate(data[:10], start=1):
-        print(f"  {index}. [{item['publish_date'] or '-'}] {item['title'][:40]}")
-    if len(data) > 10:
-        print(f"  ……还有 {len(data) - 10} 条")

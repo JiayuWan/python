@@ -1,7 +1,10 @@
 
-import requests
 import re
+
+import requests
 from bs4 import BeautifulSoup
+
+from config import HEADERS, MIN_CONTENT_LEN, REQUEST_TIMEOUT
 
 
 def clean_field_value(value):
@@ -162,8 +165,8 @@ CONTENT_SELECTORS = [
     "article",
 ]
 
-# 正文至少要这么多字才算有效，挡掉"内容不存在"“登录后查看”这类空壳
-MIN_CONTENT_LEN = 100
+# 正文至少要 MIN_CONTENT_LEN 个字才算有效，挡掉"内容不存在"“登录后查看”这类空壳
+# （阈值在 config.py 里，默认 100）
 
 
 def pick_title(soup):
@@ -287,21 +290,14 @@ def get_announcement_detail(detail_url, session=None):
 
     # 2. 请求详情页
     # UA 只用 "Mozilla/5.0" 会被不少政府站点直接 403，
-    # 换成完整的浏览器请求头，跨站也能拿到页面。
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-    }
+    # 完整浏览器请求头在 config.py 里，跨站也能拿到页面
+    headers = HEADERS
 
     _get = session.get if session else requests.get
     response = _get(
         detail_url,
         headers=headers,
-        timeout=20
+        timeout=REQUEST_TIMEOUT
     )
 
     response.raise_for_status()
@@ -572,5 +568,4 @@ def get_announcement_detail(detail_url, session=None):
             break
 
     return announcement
-
 

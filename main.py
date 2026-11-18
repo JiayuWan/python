@@ -5,6 +5,7 @@ import random  # noqa: F401  已不再按条随机睡眠，限速由 throttle �
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from config import MIN_INTERVAL, REQUESTS_PER_SEC, WORKERS
 from detail_spider import get_announcement_detail
 from keyword_filter import filter_announcement
 from excel_export import export_to_excel
@@ -19,9 +20,7 @@ except Exception:
     pass
 
 # ---------------- 性能参数 ----------------
-WORKERS = 8              # 并发线程数；原来 5
-REQUESTS_PER_SEC = 12    # 全局请求速率上限（所有线程合计），防被站点限流
-MIN_INTERVAL = 1.0 / REQUESTS_PER_SEC
+# 线程数、限速、超时、重试都在 config.py 里，想调去那边改，这里不再写死
 
 _rate_lock = threading.Lock()
 _rate_next = [0.0]
